@@ -159,7 +159,7 @@ const { pathToFileURL } = require('node:url');
       await page.locator('.feedback-help > summary').click();
       assert.equal(await page.locator('.feedback-note').isVisible(),true);
       const note=await page.locator('.feedback-note').textContent();
-      assert(note.includes('如果使用正常') && note.includes('关注我的抖音') && note.includes('大学名称') && note.includes('帮助更多小伙伴使用小助手'));
+      assert(note.includes('如果使用正常') && note.includes('2810757607@qq.com') && note.includes('使用小助手'));
       const rect=await page.locator('.feedback-note').boundingBox();
       assert(rect.x>=0 && rect.y>=0 && rect.x+rect.width<=980 && rect.y+rect.height<=700,'Feedback note clipped at minimum size.');
       await page.screenshot({animations:'disabled',path:path.join(output,'feedback-'+colorScheme+'.png')});
