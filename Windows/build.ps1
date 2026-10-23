@@ -8,7 +8,8 @@ if ($LASTEXITCODE -ne 0) { throw 'Windows build failed.' }
 $files = @(Get-ChildItem $staging -Recurse -File)
 $expected = @('CampusConnect.exe', 'onnxruntime.dll', 'onnxruntime_providers_shared.dll',
     'models/captcha-common.onnx', 'models/captcha-digits.json', 'models/SOURCE.json')
-$actual = @($files | ForEach-Object { [IO.Path]::GetRelativePath($staging, $_.FullName).Replace('\', '/') })
+$stagingPrefix = (Resolve-Path $staging).Path.TrimEnd('\', '/') + '\'
+$actual = @($files | ForEach-Object { $_.FullName.Substring($stagingPrefix.Length).Replace('\', '/') })
 if (@(Compare-Object ($expected | Sort-Object) ($actual | Sort-Object)).Count -ne 0) {
     throw 'Published app, native libraries or model files differ from the expected payload.'
 }

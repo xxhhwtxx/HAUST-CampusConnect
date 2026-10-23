@@ -18,6 +18,8 @@ internal static class Program
         ApplicationConfiguration.Initialize();
         var verificationIndex = Array.IndexOf(args, "--verify-ui");
         var verificationPath = verificationIndex >= 0 && verificationIndex + 1 < args.Length ? args[verificationIndex + 1] : null;
-        Application.Run(new MainForm(verificationPath, startInTray));
+        var liveTestIndex = Array.IndexOf(args, "--test-haust-live");
+        var liveTestPath = liveTestIndex >= 0 && liveTestIndex + 1 < args.Length ? args[liveTestIndex + 1] : null;
+        Application.Run(new MainForm(verificationPath, startInTray, liveTestPath));
     }
 }

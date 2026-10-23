@@ -13,7 +13,9 @@ internal sealed partial class MainForm : Form
     private string savedPassword = "";
     private readonly AutoPolicy policy = new();
     private readonly PortalRecovery recovery = new();
+    private readonly CampusProxy campusProxy = new();
     private readonly PortalController portal;
+    private HaustSessionInfo? haustSession;
     private WebView2 shell = new() { Dock = DockStyle.Fill };
     private readonly System.Windows.Forms.Timer timer = new() { Interval = AutoPolicy.NetworkCheckIntervalMilliseconds };
     private readonly NotifyIcon tray;
@@ -40,10 +42,12 @@ internal sealed partial class MainForm : Form
     private int generation;
     private Rectangle portalBounds;
     private readonly string? verificationPath;
+    private readonly string? liveTestPath;
 
-    public MainForm(string? verificationPath = null, bool startInTray = false)
+    public MainForm(string? verificationPath = null, bool startInTray = false, string? liveTestPath = null)
     {
         this.verificationPath = verificationPath;
+        this.liveTestPath = liveTestPath;
         portal = new(GetBrowserEnvironmentAsync);
         Text = "校园Wi-Fi小助手";
         AutoScaleMode = AutoScaleMode.Dpi;
@@ -74,6 +78,7 @@ internal sealed partial class MainForm : Form
             wiredAttempt?.Cancel();
             timer.Stop(); timer.Dispose(); tray.Dispose();
             portal.View.Dispose(); shell.Dispose();
+            campusProxy.Dispose();
         };
         portal.Status += message => {
             if (portalStatus != message && message != "已经连接成功") Record(message);
@@ -123,7 +128,8 @@ internal sealed partial class MainForm : Form
         Directory.CreateDirectory(LocalStore.DirectoryPath);
         if (browserEnvironment is { IsFaulted: true } or { IsCanceled: true }) browserEnvironment = null;
         return browserEnvironment ??= CoreWebView2Environment.CreateAsync(null,
-            Path.Combine(LocalStore.DirectoryPath, "WebView2"), new CoreWebView2EnvironmentOptions("--no-proxy-server"));
+            Path.Combine(LocalStore.DirectoryPath, "WebView2"),
+            new CoreWebView2EnvironmentOptions($"--proxy-server=http://127.0.0.1:{campusProxy.Port} --proxy-bypass-list=campusconnect-ui.invalid;<-loopback>"));
     }
 
     private async Task InitializeShellAsync()
@@ -205,7 +211,12 @@ internal sealed partial class MainForm : Form
                     File.WriteAllText(verificationPath, JsonSerializer.Serialize(snapshot));
                     exiting = true; Close(); return;
                 }
+                if (liveTestPath is not null) {
+                    _ = RunLiveHaustVerificationAsync(liveTestPath);
+                    break;
+                }
                 UpdatePollingSchedule();
+                _ = SafeAsync(RefreshHaustSessionAsync);
                 // Connect immediately from the WLAN cache when the target is already visible.
                 if (saved.Automatic) await BackgroundTickAsync(); break;
             case "hydrated":
@@ -241,6 +252,7 @@ internal sealed partial class MainForm : Form
             case "discoverPortal": await OpenPortalAsync(discover: true); break;
             case "stopPortal": StopAuthentication(); portalStatus = "认证已暂停。"; PushState(); UpdatePortalVisibility(); break;
             case "checkInternet": await CheckInternetAsync(false); break;
+            case "testHaustConnection": await TestHaustConnectionAsync(); break;
             case "adoptAddress":
                 var url = portal.Address;
                 if (CampusProfile.Origin(url) is null) throw new InvalidOperationException("当前没有可保存的认证网址。");
@@ -325,6 +337,21 @@ internal sealed partial class MainForm : Form
             ethernetAdapters, broadbandEntries,
             automatic = saved.Automatic, busy = DesktopBridge.ControlsBusy(busy, backgroundRefreshing), permissionNeeded, lastScan, status,
             portalStatus, portalAddress = portal.Address,
+            haustSession = haustSession is null ? null : new {
+                reachable = haustSession.PortalReachable,
+                online = haustSession.Online,
+                message = haustSession.GatewayMessage,
+                username = haustSession.Username,
+                studentName = haustSession.Name,
+                ipv4 = haustSession.UserIpv4,
+                mac = haustSession.UserMac,
+                isp = haustSession.Isp,
+                onlineDevices = haustSession.OnlineDevices,
+                onlineDuration = haustSession.Duration,
+                trafficSummary = haustSession.Traffic,
+                portalHost = HaustPortalTelemetry.DefaultAuthHost,
+                adapterName = currentSsid ?? (saved.IsWired ? "以太网" : "WLAN")
+            },
             networks = networks.DistinctBy(n => n.Ssid).Select(n => new { n.Ssid, n.Signal, n.Secure }).ToArray()
         }};
         var serialized = JsonSerializer.Serialize(message, JsonOptions);
@@ -352,6 +379,7 @@ internal sealed partial class MainForm : Form
         currentSsid = null; wiredInterface = null; permissionNeeded = false; networks = [];
         StopAuthentication(); UpdatePortalVisibility(); shellSnapshot = null; PushProfile();
         Record(saved.Automatic ? "设置已保存，自动连接已开启。" : "设置已保存。");
+        _ = SafeAsync(RefreshHaustSessionAsync);
         if (saved.Automatic) _ = SafeAsync(BackgroundTickAsync);
     }
     private void Pause()
@@ -413,6 +441,7 @@ internal sealed partial class MainForm : Form
                 ethernetAdapters = choices.Ethernet; broadbandEntries = choices.Broadband;
                 if (saved.IsWired) {
                     RefreshWiredConnection();
+                    await RefreshHaustSessionAsync();
                     if (wiredInterface is not null) await ConnectWiredAsync(manual: false);
                     return;
                 }
@@ -425,6 +454,7 @@ internal sealed partial class MainForm : Form
                     StopAuthentication(); UpdatePortalVisibility();
                     Record(currentSsid is null ? "Wi-Fi 连接已断开。" : "当前连接：" + currentSsid);
                 }
+                await RefreshHaustSessionAsync();
                 if (snapshot.Current == saved.Ssid) {
                     if (saved.Automatic) _ = SafeAsync(CheckInternetIfDueAsync);
                 } else if (policy.ShouldJoin(saved.Automatic, saved.Ssid, snapshot.Current, snapshot.Networks.Select(n => n.Ssid), false, DateTimeOffset.UtcNow)) {
@@ -531,6 +561,8 @@ internal sealed partial class MainForm : Form
             var adapter = await CampusNetwork.ReadInterfaceAsync(activeProfile);
             if (expected != generation || IsDisposed) return;
             var result = await Connectivity.CheckAsync(adapter);
+            var sessionProbe = await HaustPortalTelemetry.ProbeAsync(adapter);
+            if (sessionProbe is not null) haustSession = sessionProbe;
             if (expected != generation || IsDisposed) return;
             connected = await CampusNetwork.IsAvailableAsync(activeProfile);
             if (expected != generation || IsDisposed) return;
@@ -578,6 +610,142 @@ internal sealed partial class MainForm : Form
         if (showPage) Navigate("portal");
         await portal.OpenAsync(saved, savedPassword, discover);
         UpdatePortalVisibility(); PushState();
+    }
+    private async Task<Guid?> ResolvePhysicalCampusAdapterAsync()
+    {
+        var adapterId = await CampusNetwork.ReadInterfaceAsync(saved);
+        if (adapterId is not null) {
+            campusProxy.PreferredInterfaceId = adapterId;
+            return adapterId;
+        }
+        var fallback = CampusNetwork.ReadLinks().FirstOrDefault(n =>
+            n.Status == System.Net.NetworkInformation.OperationalStatus.Up &&
+            (n.Type == System.Net.NetworkInformation.NetworkInterfaceType.Wireless80211 ||
+             CampusNetwork.IsWiredInterface(n.Type, n.Status)))?.Id;
+        campusProxy.PreferredInterfaceId = fallback;
+        return fallback;
+    }
+    private async Task RefreshHaustSessionAsync()
+    {
+        try {
+            var adapterId = await ResolvePhysicalCampusAdapterAsync();
+            var info = await HaustPortalTelemetry.ProbeAsync(adapterId);
+            if (!IsDisposed) {
+                haustSession = info;
+                if (info.Online && online is null) online = true;
+                PushState();
+            }
+        } catch { }
+    }
+    private async Task TestHaustConnectionAsync()
+    {
+        if (busy) { Record("正在扫描或连接，请稍候。"); return; }
+        busy = true; PushState();
+        try {
+            Record("正在直连河科大认证网关 (10.100.51.1) 进行状态核验与测试连接…");
+            var adapterId = await ResolvePhysicalCampusAdapterAsync();
+            var auth = await HaustPortalTelemetry.DirectAuthenticateOrVerifyAsync(saved, savedPassword, adapterId);
+            var netStatus = await Connectivity.CheckAsync(adapterId);
+            if (IsDisposed) return;
+            haustSession = auth.Session;
+            online = netStatus == InternetStatus.Online || auth.Session.Online;
+            if (auth.Success && online == true) {
+                recovery.Observe(InternetStatus.Online);
+                portal.ConfirmInternetAccess();
+                portalStatus = auth.Message;
+            }
+            Record(auth.Message + (netStatus == InternetStatus.Online ? " · 外网连通正常" : ""));
+        } finally { busy = false; PushState(); }
+    }
+    private async Task RunLiveHaustVerificationAsync(string reportPath)
+    {
+        try {
+            var outDir = Path.GetDirectoryName(Path.GetFullPath(reportPath))!;
+            Directory.CreateDirectory(outDir);
+            await RefreshAsync(scan: true, waitForScan: false);
+            if (string.IsNullOrWhiteSpace(saved.Ssid)) {
+                saved = saved with {
+                    ConnectionMode = "wifi",
+                    Ssid = currentSsid ?? HaustPortalTelemetry.DefaultSsid,
+                    PortalEnabled = true,
+                    PortalUrl = HaustPortalTelemetry.DefaultPortalUrl,
+                    Username = haustSession?.Username ?? saved.Username
+                };
+                PushProfile();
+                SendState();
+            }
+            await TestHaustConnectionAsync();
+            await Task.Delay(500);
+            var dashboardPng = Path.Combine(outDir, "haust-dashboard-live.png");
+            await CaptureShellScreenshotAsync(dashboardPng);
+
+            Navigate("settings");
+            await Task.Delay(500);
+            var settingsPng = Path.Combine(outDir, "haust-settings-live.png");
+            await CaptureShellScreenshotAsync(settingsPng);
+
+            await OpenPortalAsync(discover: false, showPage: true);
+            for (var i = 0; i < 40; i++) {
+                await Task.Delay(250);
+                if (portal.Address.Contains("login_account.html", StringComparison.OrdinalIgnoreCase) &&
+                    (portalStatus == "已经连接成功" || portalStatus.Contains("确认登录成功", StringComparison.Ordinal))) {
+                    break;
+                }
+            }
+            await Task.Delay(800);
+            var portalPng = Path.Combine(outDir, "haust-portal-live.png");
+            await CaptureCompositePortalScreenshotAsync(portalPng);
+
+            var report = new {
+                timestamp = DateTimeOffset.Now.ToString("O"),
+                currentSsid,
+                targetSsid = saved.Ssid,
+                portalEntryUrl = saved.PortalUrl,
+                portalFinalAddress = portal.Address,
+                portalStatus,
+                status,
+                internetOnline = online == true,
+                campusProxyPort = campusProxy.Port,
+                haustSession,
+                screenshots = new[] { dashboardPng, settingsPng, portalPng }
+            };
+            await File.WriteAllTextAsync(reportPath, JsonSerializer.Serialize(report, new JsonSerializerOptions(JsonOptions) { WriteIndented = true }));
+        } catch (Exception ex) {
+            await File.WriteAllTextAsync(reportPath, JsonSerializer.Serialize(new { error = ex.ToString() }));
+        } finally {
+            exiting = true;
+            Close();
+        }
+    }
+    private async Task CaptureShellScreenshotAsync(string path)
+    {
+        await using var fs = File.Create(path);
+        await shell.CoreWebView2.CapturePreviewAsync(CoreWebView2CapturePreviewImageFormat.Png, fs);
+    }
+    private async Task CaptureCompositePortalScreenshotAsync(string path)
+    {
+        using var shellStream = new MemoryStream();
+        await shell.CoreWebView2.CapturePreviewAsync(CoreWebView2CapturePreviewImageFormat.Png, shellStream);
+        shellStream.Position = 0;
+        using var baseBmp = new Bitmap(shellStream);
+        if (portal.View.Visible && portal.View.CoreWebView2 is not null && portal.View.Width > 0 && portal.View.Height > 0) {
+            try {
+                using var portalStream = new MemoryStream();
+                await portal.View.CoreWebView2.CapturePreviewAsync(CoreWebView2CapturePreviewImageFormat.Png, portalStream);
+                portalStream.Position = 0;
+                using var portalBmp = new Bitmap(portalStream);
+                using var g = Graphics.FromImage(baseBmp);
+                var scaleX = (float)baseBmp.Width / Math.Max(1, ClientSize.Width);
+                var scaleY = (float)baseBmp.Height / Math.Max(1, ClientSize.Height);
+                var destRect = new RectangleF(
+                    portal.View.Bounds.X * scaleX,
+                    portal.View.Bounds.Y * scaleY,
+                    portal.View.Bounds.Width * scaleX,
+                    portal.View.Bounds.Height * scaleY);
+                g.DrawImage(portalBmp, destRect);
+            } catch { }
+        }
+        baseBmp.Save(path, System.Drawing.Imaging.ImageFormat.Png);
     }
     private static void OpenSettings(string uri) => Process.Start(new ProcessStartInfo(uri) { UseShellExecute = true });
     private void RestoreWindow() {

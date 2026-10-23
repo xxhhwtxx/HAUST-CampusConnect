@@ -79,7 +79,29 @@
       });
     }
   }, true);
+  const suppressDxzJump = () => {
+    if (location.pathname.endsWith('/login_account.html') ||
+        (document.getElementById('details') && document.getElementById('my-form'))) {
+      try {
+        Object.defineProperty(window, 'portalLoginedJumpTo', {
+          configurable: true,
+          get: () => '',
+          set: () => {}
+        });
+      } catch (_) {
+        window.portalLoginedJumpTo = '';
+      }
+      if (document.head && !document.getElementById('__campusDxzCompactStyle')) {
+        const style = document.createElement('style');
+        style.id = '__campusDxzCompactStyle';
+        style.textContent = '#dxzHeader{max-height:120px!important;min-height:0!important;overflow:hidden!important}#layout.login-content-main{margin-top:8px!important;padding-top:8px!important}';
+        document.head.appendChild(style);
+      }
+    }
+  };
+  suppressDxzJump();
   const start = () => {
+    suppressDxzJump();
     const load = window.onload;
     const known = typeof load === 'function' &&
       /^function\s*\([^)]*\)\s*\{\s*fillData\(\);\s*getServices\(\);\s*autosize\(\);?\s*\}$/.test(Function.prototype.toString.call(load));

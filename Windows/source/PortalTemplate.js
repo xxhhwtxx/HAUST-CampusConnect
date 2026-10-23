@@ -12,8 +12,16 @@
     return action.origin === cfg.origin && action.pathname === '/zportal/logout' &&
       ['userName','userIp','deviceIp'].every(name => form.querySelector('input[type="hidden"][name="'+name+'"]'));
   })();
-  if (successPage || zportalSuccess || outcome === 'success') return 'authenticated';
-  if (outcome === 'fail') return 'authentication-rejected';
+  const visible = e => e && !e.disabled && e.getClientRects().length > 0;
+  const editable = e => e instanceof HTMLInputElement && !e.disabled && !e.readOnly;
+  const dxzSuccess = visible(document.querySelector('#details.main-page-details')) &&
+    visible(document.querySelector('#logout')) &&
+    !visible(document.querySelector('#login-account'));
+  const dxzMessage = (document.querySelector('#messageContent')?.textContent || '').trim();
+  const dxzRejected = !!window.__campusSubmitted && visible(document.querySelector('#messageBox')) &&
+    /错误|失败|不存在|欠费|禁用|锁定|限制|拒绝|invalid|error|fail/i.test(dxzMessage);
+  if (successPage || zportalSuccess || dxzSuccess || outcome === 'success') return 'authenticated';
+  if (dxzRejected || outcome === 'fail') return 'authentication-rejected';
   if (cfg.statusOnly) return window.__campusSubmitted ? 'awaiting-authentication' : 'not-submitted';
   const pending = cfg.confirmSubmit && window.__campusSubmitAttempt;
   if (pending && pending.failed) return 'submission-unconfirmed';
@@ -25,8 +33,6 @@
   if (document.readyState === 'loading') return 'waiting-ready';
   const ready = window.__campusReady;
   if (ready && (ready.failed || !ready.pageInfo || !ready.getServices)) return 'waiting-ready';
-  const visible = e => e && !e.disabled && e.getClientRects().length > 0;
-  const editable = e => e instanceof HTMLInputElement && !e.disabled && !e.readOnly;
   let user, pass, submit, portalUser, portalPass, portalButton, zportalUser, zportalPass, zportalButton;
   const tipFor = input => input === portalUser ? document.querySelector('#username_tip') :
     input === portalPass ? document.querySelector('#pwd_tip') || document.querySelector('#passwordIn_1') : input === zportalPass ? input.form?.querySelector('input#tx[type="text"]') : null;
@@ -75,7 +81,7 @@
     if (!user && !cfg.userSelector) user = [...root.querySelectorAll('input[type="text"],input[type="tel"],input[type="email"],input:not([type])')].find(e => editable(e) && visible(e));
     submit = cfg.submitSelector ? document.querySelector(cfg.submitSelector) : portalButton || zportalButton ||
       [...root.querySelectorAll('button,input[type="submit"],input[type="button"],a,[role="button"]')].filter(e => e.getClientRects().length > 0)
-        .find(e => e.type === 'submit' || /^(登录|登陆|认证|连接|login|log in|sign in|connect)(\s*(login|登录|登陆))?$/i.test((e.innerText || e.value || '').trim()));
+        .find(e => e.type === 'submit' || /^(立即)?(登录|登陆|认证|连接|login|log in|sign in|connect)(\s*(login|登录|登陆))?$/i.test((e.innerText || e.value || '').trim()));
   } catch (_) { return 'invalid-selector'; }
   if (!available(user) || !available(pass)) return 'missing-fields';
   const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;
@@ -127,6 +133,16 @@
     }
     if (serviceName) {
       const normalized = text => (text || '').trim();
+      const dxzIspSelect = document.querySelector('select#isp-select[name="isp"]');
+      if (dxzIspSelect && !visible(dxzIspSelect) && (!dxzIspSelect.form || dxzIspSelect.form === pass.form)) {
+        const ispAlias = {'校园网':'local','中国移动':'cmcc','移动':'cmcc','中国联通':'cucc','联通':'cucc','中国电信':'ctcc','电信':'ctcc','local':'local','cmcc':'cmcc','cucc':'cucc','ctcc':'ctcc'}[serviceName.toLowerCase()] || serviceName;
+        const option = [...dxzIspSelect.options].find(o => !o.disabled && (normalized(o.textContent) === serviceName || o.value === ispAlias));
+        if (option) {
+          dxzIspSelect.value = option.value;
+          dxzIspSelect.dispatchEvent(new Event('change', {bubbles:true}));
+          return null;
+        }
+      }
       const serviceValue = document.querySelector('#net_access_type');
       const serviceLabel = document.querySelector('#selectDisname');
       if (portalButton && serviceValue && serviceLabel && !(serviceValue instanceof HTMLSelectElement)) {

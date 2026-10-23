@@ -45,6 +45,13 @@ internal static class PortalRedirectTests
         expect(server.Navigate("https://school.test/login", true, true, now) == PortalNavigationDecision.Redirected, "HTTP redirect retains original user gesture without being blocked");
         var downgrade = new PortalRedirectSession("https://school.test", now);
         expect(downgrade.Navigate("http://school.test/login", false, true, now) == PortalNavigationDecision.External, "HTTPS entry cannot silently downgrade");
+        var haust = new PortalRedirectSession("http://10.100.51.1", now);
+        expect(haust.Navigate("http://10.100.51.1", false, false, now) == PortalNavigationDecision.Allowed, "HAUST HTTP entry allowed");
+        expect(haust.Navigate("https://10.100.51.1/", false, true, now) == PortalNavigationDecision.Redirected, "HAUST 301 to HTTPS allowed");
+        expect(haust.Navigate("https://10.100.51.1/api/r/1?url=", false, false, now) == PortalNavigationDecision.Allowed, "HAUST script redirect to /api/r/1 allowed");
+        expect(haust.Navigate("http://10.100.51.1/tpl/stu-ky/login.html?ip=10.0.0.1&nasId=1", false, true, now) == PortalNavigationDecision.Redirected, "HAUST same-IP HTTP 302 from /api/r/1 allowed");
+        expect(haust.Navigate("https://10.100.51.1/tpl/stu-ky/login.html?ip=10.0.0.1&nasId=1", false, true, now) == PortalNavigationDecision.Redirected, "HAUST Nginx 301 back to HTTPS login.html allowed");
+        expect(haust.Navigate("https://10.100.51.1/tpl/stu-ky/login_account.html?ip=10.0.0.1&nasId=1", false, false, now) == PortalNavigationDecision.Allowed, "HAUST login_account.html allowed");
         foreach (var url in new[] {"javascript:alert(1)", "file:///tmp/login", "http://user:pass@school.test/"}) {
             var invalid = new PortalRedirectSession("http://1.1.1.1", now);
             expect(invalid.Navigate(url, false, true, now) == PortalNavigationDecision.Invalid, "invalid redirect rejected");

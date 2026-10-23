@@ -76,7 +76,26 @@ internal sealed class PortalController
         View.CoreWebView2.Settings.IsGeneralAutofillEnabled = false;
         View.CoreWebView2.Settings.IsWebMessageEnabled = false;
         View.CoreWebView2.Settings.AreHostObjectsAllowed = false;
-        View.CoreWebView2.SourceChanged += (_, _) => AddressChanged?.Invoke();
+        View.CoreWebView2.SourceChanged += (_, _) => {
+            try {
+                if (Uri.TryCreate(View.CoreWebView2.Source, UriKind.Absolute, out var srcUri) &&
+                    srcUri.Host == HaustPortalTelemetry.DefaultAuthHost) {
+                    View.ZoomFactor = 0.72;
+                } else if (View.ZoomFactor != 1.0) {
+                    View.ZoomFactor = 1.0;
+                }
+            } catch { }
+            AddressChanged?.Invoke();
+        };
+        View.CoreWebView2.ServerCertificateErrorDetected += (_, e) => {
+            if (Uri.TryCreate(e.RequestUri, UriKind.Absolute, out var uri) &&
+                (uri.Host is "10.100.51.1" or "10.10.10.111" or "210.43.0.48" ||
+                 uri.Host.EndsWith(".haust.edu.cn", StringComparison.OrdinalIgnoreCase) ||
+                 e.ServerCertificate.Subject.Contains("haust.edu.cn", StringComparison.OrdinalIgnoreCase) ||
+                 e.ServerCertificate.Subject.Contains("河南科技大学", StringComparison.OrdinalIgnoreCase))) {
+                e.Action = CoreWebView2ServerCertificateErrorAction.AlwaysAllow;
+            }
+        };
         View.CoreWebView2.NewWindowRequested += (_, e) => { e.Handled = true; Status?.Invoke("认证页请求打开新窗口，请在系统浏览器中手动处理。"); };
         View.CoreWebView2.PermissionRequested += (_, e) => e.State = CoreWebView2PermissionState.Deny;
         View.CoreWebView2.DownloadStarting += (_, e) => e.Cancel = true;
@@ -377,9 +396,6 @@ internal sealed class PortalController
                 Fail("wrong-origin", "当前页面不属于本次认证跳转，已暂停自动重试，请确认学校地址。"); return;
             }
             if (discovering) { RequiresInteraction = true; Status?.Invoke("已打开探测到的页面，请确认属于学校后使用当前地址。"); return; }
-            if (profile.Username.Length == 0 || password.Length == 0) {
-                RequiresInteraction = true; Fail("missing-credentials", "请在设置中填写上网账号密码，或直接在网页中手动登录。"); return;
-            }
             // The document-start script was scoped to the saved entry origin.
             // Install it on an approved redirect destination too, without reloads.
             await View.CoreWebView2.ExecuteScriptAsync(PortalScript.InContext(activeProfile, BootstrapFor(activeProfile)));
@@ -392,6 +408,10 @@ internal sealed class PortalController
                 Fail("missing-fields", "入口跳转后未找到可填写的登录表单，已暂停自动重试。请等待学校页面或手动操作。"); return;
             }
             redirectSession?.Pin();
+            if (await CheckAuthenticationPageAsync()) return;
+            if (profile.Username.Length == 0 || password.Length == 0) {
+                RequiresInteraction = true; Fail("missing-credentials", "请在设置中填写上网账号密码，或直接在网页中手动登录。"); return;
+            }
             var result = JsonSerializer.Deserialize<string>(await View.CoreWebView2.ExecuteScriptAsync(PortalScript.Build(activeProfile, password)));
             if (expected != generation) return;
             switch (result) {

@@ -156,7 +156,12 @@ public sealed class PortalRedirectSession(string entryUrl, DateTimeOffset starte
             var key = uri.GetComponents(UriComponents.HttpRequestUrl, UriFormat.UriEscaped);
             if (visited.Count >= 10 || !visited.Add(key)) { Blocked = true; return PortalNavigationDecision.Loop; }
             if (new Uri(CurrentUrl).Scheme == "https" && uri.Scheme != "https") {
-                Blocked = true; return PortalNavigationDecision.External;
+                var currentUri = new Uri(CurrentUrl);
+                var sameIpHost = System.Net.IPAddress.TryParse(uri.Host, out _) &&
+                    string.Equals(currentUri.Host, uri.Host, StringComparison.OrdinalIgnoreCase);
+                if (!sameIpHost) {
+                    Blocked = true; return PortalNavigationDecision.External;
+                }
             }
         }
         CurrentUrl = url;
@@ -186,6 +191,8 @@ public static class PortalScript
           const cfg = /*PROBE*/;
           if (location.origin !== cfg.origin || document.readyState === 'loading') return false;
           try {
+            if (document.querySelector('#details.main-page-details')?.getClientRects().length > 0 &&
+                document.querySelector('#logout')?.getClientRects().length > 0) return true;
             const inputs = document.querySelectorAll(cfg.passwordSelector || 'input[type="password"]');
             return [...inputs].some(input => input instanceof HTMLInputElement && !input.disabled && !input.readOnly &&
               (input.getClientRects().length > 0 ||
@@ -243,7 +250,7 @@ public static class PortalScript
                 /checkform\s*\(/.test(document.querySelector('#login_btn')?.getAttribute('onclick') || '') ? document.querySelector('#login_btn') : null) ||
               [...root.querySelectorAll('button,input[type="submit"],input[type="button"],a,[role="button"]')]
               .filter(e => e.getClientRects().length > 0).find(e => e.type === 'submit' ||
-                /^(登录|登陆|认证|连接|login|signin|connect)$/i.test((e.innerText || e.value || '').replace(/\s+/g,'')));
+                /^(立即)?(登录|登陆|认证|连接|login|signin|connect)$/i.test((e.innerText || e.value || '').replace(/\s+/g,'')));
           } catch (_) { return 'invalid-selector'; }
           if (!editable(user) || !editable(pass) || !visible(user) || !visible(pass) || !user.value || !pass.value) return 'missing-fields';
           /*CAPTCHA*/
